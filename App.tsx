@@ -30,82 +30,175 @@ const DEFAULT_COA = `1-1100 Kas Besar
 5-1700 Beban Lain-lain
 5-1800 Beban Administrasi Bank`;
 
-const App: React.FC = () => {
-  // Check auth state on initial load
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return localStorage.getItem('sijo_is_authenticated') === 'true';
-  });
+const DEFAULT_PROFILE = {
+  name: "Pengguna SiJO",
+  role: "", 
+  school: "",
+  university: "Universitas Indonesia", 
+  email: "user@example.com",
+  avatar: null as string | null
+};
 
+// --- SESSION SECURITY HELPERS ---
+const generateMockToken = (user: User) => {
+  // Simulasi JWT: Header.Payload.Signature (Mock)
+  const payload = JSON.stringify({ 
+    sub: user.email, 
+    name: user.name, 
+    iat: Date.now(),
+    iss: 'sijo-auth-system' 
+  });
+  return btoa(payload); // Encode Base64 sebagai token
+};
+
+const getValidSession = (): { user: User, token: string } | null => {
+  try {
+    const sessionStr = localStorage.getItem('sijo_session');
+    if (!sessionStr) return null;
+
+    const session = JSON.parse(sessionStr);
+    
+    // 1. Validasi Keberadaan Token
+    if (!session.token || !session.user) return null;
+
+    // 2. Validasi Integritas Token (Decode & Match)
+    const decodedPayload = JSON.parse(atob(session.token));
+    if (decodedPayload.sub !== session.user.email) {
+      console.warn("Security Alert: Token mismatch detected.");
+      return null;
+    }
+
+    return session;
+  } catch (e) {
+    console.error("Session validation error:", e);
+    return null;
+  }
+};
+
+const App: React.FC = () => {
+  // Authentication State & Session
+  const [session, setSession] = useState<{ user: User, token: string } | null>(getValidSession);
+
+  // App Data States
   const [appState, setAppState] = useState<AppState>(AppState.GUIDE);
-  const [inputText, setInputText] = useState<string>('');
-  const [coaText, setCoaText] = useState<string>(DEFAULT_COA);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [profile, setProfile] = useState(DEFAULT_PROFILE);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
+  const [coaText, setCoaText] = useState<string>(DEFAULT_COA);
+  
+  // UI States
+  const [inputText, setInputText] = useState<string>('');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
-  // Profile State dengan Persistence (LocalStorage)
-  const [profile, setProfile] = useState(() => {
-    const saved = localStorage.getItem('sijo_profile');
-    return saved ? JSON.parse(saved) : {
-      name: "Pengguna SiJO",
-      role: "", // Default empty agar user mengisi sendiri
-      school: "", // Default empty, not used in simplified view
-      university: "Universitas Indonesia", 
-      email: "user@example.com",
-      avatar: null as string | null
-    };
-  });
-  
-  // State terpisah untuk form edit agar update tidak reaktif langsung ke UI utama sebelum Save
-  const [editForm, setEditForm] = useState(profile);
+  // Profile Edit States
+  const [editForm, setEditForm] = useState(DEFAULT_PROFILE);
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Simpan perubahan profil ke LocalStorage
+  // --- DATA LOADING & PERSISTENCE (USER SCOPED) ---
+
+  // 1. Load Data User saat Session Berubah/Terinisialisasi
   useEffect(() => {
-    localStorage.setItem('sijo_profile', JSON.stringify(profile));
-  }, [profile]);
+    if (session) {
+      const userKey = session.user.email; // Kunci unik per user
 
-  // Handler Login
+      // A. Load Profile
+      const savedProfile = localStorage.getItem(`sijo_profile_${userKey}`);
+      if (savedProfile) {
+        const parsed = JSON.parse(savedProfile);
+        setProfile(parsed);
+        setEditForm(parsed);
+      } else {
+        // Init profile baru dari data session login
+        const initialProfile = {
+          ...DEFAULT_PROFILE,
+          name: session.user.name,
+          email: session.user.email,
+          role: session.user.role || "",
+          university: session.user.university || DEFAULT_PROFILE.university
+        };
+        setProfile(initialProfile);
+        setEditForm(initialProfile);
+      }
+
+      // B. Load Journal Entries (Persistent)
+      const savedJournals = localStorage.getItem(`sijo_journals_${userKey}`);
+      if (savedJournals) {
+        setJournalEntries(JSON.parse(savedJournals));
+        // Jika ada data jurnal, arahkan ke halaman Results atau Dashboard (opsional)
+        // setAppState(AppState.RESULTS); 
+      } else {
+        setJournalEntries([]);
+      }
+
+      // C. Load COA Config
+      const savedCoa = localStorage.getItem(`sijo_coa_${userKey}`);
+      if (savedCoa) {
+        setCoaText(savedCoa);
+      } else {
+        setCoaText(DEFAULT_COA);
+      }
+
+    } else {
+      // Reset state jika tidak ada session (Security measure)
+      setProfile(DEFAULT_PROFILE);
+      setJournalEntries([]);
+      setCoaText(DEFAULT_COA);
+    }
+  }, [session]);
+
+  // 2. Auto-Save Data ke LocalStorage (User Scoped)
+  useEffect(() => {
+    if (session) {
+      const userKey = session.user.email;
+      localStorage.setItem(`sijo_profile_${userKey}`, JSON.stringify(profile));
+    }
+  }, [profile, session]);
+
+  useEffect(() => {
+    if (session) {
+      const userKey = session.user.email;
+      localStorage.setItem(`sijo_journals_${userKey}`, JSON.stringify(journalEntries));
+    }
+  }, [journalEntries, session]);
+
+  useEffect(() => {
+    if (session) {
+      const userKey = session.user.email;
+      localStorage.setItem(`sijo_coa_${userKey}`, coaText);
+    }
+  }, [coaText, session]);
+
+  // --- HANDLERS ---
+
   const handleLogin = (user: User) => {
-    setIsAuthenticated(true);
-    localStorage.setItem('sijo_is_authenticated', 'true');
+    // Generate Token & Create Session
+    const token = generateMockToken(user);
+    const newSession = { user, token };
     
-    // Saat login, kita gabungkan data user dari Auth dengan profile saat ini
-    // Note: user.role dari Auth sekarang defaultnya kosong
-    const newProfile = {
-      ...profile,
-      name: user.name,
-      role: user.role || profile.role, // Gunakan role dari user jika ada, atau keep yg lama
-      university: user.university || profile.university,
-      email: user.email
-    };
-    setProfile(newProfile);
-    setEditForm(newProfile); // Sync edit form
+    // Simpan ke storage global hanya untuk session aktif
+    localStorage.setItem('sijo_session', JSON.stringify(newSession));
+    setSession(newSession);
   };
 
-  // Handler Logout
   const handleLogout = () => {
-    setIsAuthenticated(false);
-    localStorage.removeItem('sijo_is_authenticated');
-    setAppState(AppState.GUIDE); // Reset state
-    setJournalEntries([]);
+    localStorage.removeItem('sijo_session');
+    setSession(null);
+    setAppState(AppState.GUIDE);
+    // Data di-reset oleh useEffect saat session null
   };
 
-  // Handler Start Edit
   const handleStartEdit = () => {
-    setEditForm(profile); // Reset form to current profile values
+    setEditForm(profile); 
     setIsEditingProfile(true);
   };
 
-  // Handler Save Profile
   const handleSaveProfile = () => {
-    setProfile(editForm); // Commit changes to main profile state
+    setProfile(editForm);
     setIsEditingProfile(false);
   };
 
-  // Handler Upload Foto (Hanya update editForm)
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -117,7 +210,8 @@ const App: React.FC = () => {
     }
   };
 
-  // Statistics state
+  // --- ANALYTICS ---
+
   const [stats, setStats] = useState<Stats>({
     totalRevenue: 0,
     totalExpense: 0,
@@ -125,7 +219,6 @@ const App: React.FC = () => {
     transactionCount: 0
   });
 
-  // Calculate stats whenever journal entries update
   useEffect(() => {
     let revenue = 0;
     let expense = 0;
@@ -133,16 +226,12 @@ const App: React.FC = () => {
     journalEntries.forEach(entry => {
       const isRevenue = entry.creditAccount.toLowerCase().includes('pendapatan') || 
                         entry.creditAccount.startsWith('4');
-      
       const isExpense = entry.debitAccount.toLowerCase().includes('beban') || 
                         entry.debitAccount.toLowerCase().includes('biaya') ||
                         entry.debitAccount.startsWith('5');
 
-      if (isRevenue) {
-        revenue += entry.amount;
-      } else if (isExpense) {
-        expense += entry.amount;
-      }
+      if (isRevenue) revenue += entry.amount;
+      else if (isExpense) expense += entry.amount;
     });
 
     setStats({
@@ -191,8 +280,8 @@ const App: React.FC = () => {
 
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
 
-  // If not authenticated, show Auth Screen
-  if (!isAuthenticated) {
+  // Jika tidak ada sesi valid, tampilkan Auth
+  if (!session) {
     return <Auth onLogin={handleLogin} />;
   }
 
@@ -211,16 +300,12 @@ const App: React.FC = () => {
             </div>
 
             <div className="flex flex-col items-center text-center">
-               {/* Static Avatar Placeholder - Locked */}
                <div className="h-32 w-32 rounded-full bg-slate-100 overflow-hidden mb-6 border-4 border-slate-50 flex items-center justify-center text-slate-400 shadow-inner">
                   <UserCircle2 size={100} />
                </div>
-               
-               {/* Static Developer Info */}
                <h3 className="text-2xl font-bold text-slate-900 mb-1">Yudi Agus Setiawan</h3>
                <p className="text-primary-600 font-semibold mb-4">Mahasiswa Peneliti</p>
 
-               {/* Tugas Akhir Badges - Moved Here */}
                <div className="flex items-center gap-2 mb-4 justify-center animate-fade-in">
                   <span className="bg-slate-900 text-white text-[10px] font-bold px-3 py-1 rounded-full uppercase tracking-wider shadow-sm">
                     Tugas Akhir
@@ -230,7 +315,6 @@ const App: React.FC = () => {
                   </span>
                </div>
 
-               {/* Academic Description */}
                <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 mb-6 max-w-md mx-auto">
                  <p className="text-slate-600 text-xs italic leading-relaxed">
                     "Proyek Akhir sebagai salah satu syarat untuk memperoleh gelar Sarjana Terapan pada Program Studi Akuntansi"
@@ -261,7 +345,6 @@ const App: React.FC = () => {
                </div>
             </div>
          </div>
-         
          <p className="text-slate-400 text-xs text-center">
             Hubungi pengembang untuk keperluan akademis atau laporan bug sistem.
          </p>
@@ -269,15 +352,11 @@ const App: React.FC = () => {
   );
 
   const renderGuidePage = () => {
-    // Tentukan data mana yang ditampilkan (Preview saat edit atau Data asli)
     const displayData = isEditingProfile ? editForm : profile;
-    
-    // Logika notifikasi: Jika nama masih default ATAU role masih KOSONG
     const showProfileAlert = profile.name === "Pengguna SiJO" || !profile.role || profile.role === "Mahasiswa / Umum";
     
     return (
     <div className="animate-fade-in space-y-6 pb-12">
-      {/* Notifikasi Perbarui Profil */}
       {showProfileAlert && !isEditingProfile && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3 animate-fade-in shadow-sm">
            <div className="p-2 bg-amber-100 rounded-lg text-amber-600 shrink-0">
@@ -286,19 +365,17 @@ const App: React.FC = () => {
            <div className="flex-1">
               <h3 className="font-bold text-slate-800 text-sm">Lengkapi Profil Anda</h3>
               <p className="text-xs text-slate-600 mt-1">
-                 Untuk hasil laporan yang optimal dan personal, disarankan untuk memperbarui data <strong>Peran</strong> dan <strong>Institusi</strong> Anda. Silakan tekan tombol edit di pojok kanan kartu di bawah.
+                 Untuk hasil laporan yang optimal dan personal, disarankan untuk memperbarui data <strong>Peran</strong> dan <strong>Institusi</strong> Anda.
               </p>
            </div>
         </div>
       )}
 
-      {/* Header Visualisasi Tugas Akhir & Profil */}
       <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-8 text-white shadow-xl relative overflow-hidden group">
         <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
           <GraduationCap size={180} />
         </div>
         
-        {/* Tombol Edit / Simpan Profil */}
         <button 
             onClick={isEditingProfile ? handleSaveProfile : handleStartEdit}
             className={`absolute top-4 right-4 p-2 rounded-full backdrop-blur-sm transition-all z-20 shadow-sm flex items-center gap-2 px-3
@@ -316,9 +393,6 @@ const App: React.FC = () => {
         </button>
 
         <div className="relative z-10">
-          <div className="mb-4">
-             {/* Badge Tugas Akhir REMOVED from here */}
-          </div>
           <h1 className="text-3xl md:text-4xl font-bold mb-2 tracking-tight">
             Selamat Datang di SiJO
           </h1>
@@ -412,7 +486,6 @@ const App: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Kolom Kiri: Panduan Penggunaan */}
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
             <div className="flex items-center gap-2 mb-6">
@@ -472,9 +545,7 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Kolom Kanan: Spesifikasi & Standar */}
         <div className="space-y-6">
-           {/* Spesifikasi Sistem (Dipindahkan dari About) */}
            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
             <div className="flex items-center gap-2 mb-4">
                <Code2 className="text-primary-600" size={24} />
@@ -500,7 +571,7 @@ const App: React.FC = () => {
                  </div>
                  <div>
                    <h3 className="font-semibold text-slate-800 text-sm">Privasi Data</h3>
-                   <p className="text-xs text-slate-500">Pemrosesan real-time, penyimpanan lokal</p>
+                   <p className="text-xs text-slate-500">Pemrosesan real-time, isolasi data pengguna</p>
                  </div>
                </div>
             </div>
